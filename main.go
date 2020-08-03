@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -43,6 +44,7 @@ func main() {
 	flag.StringVar(&args.HTML, "html", args.HTML, "generated gallery html file")
 	flag.StringVar(&args.Template, "template", args.Template, "template to use instead of default")
 	flag.StringVar(&args.Name, "name", args.Name, "optional gallery name")
+	flag.StringVar(&args.Cache, "cache", args.Cache, "optional metadata cache, enables incremental gallery update")
 
 	var dump bool
 	flag.BoolVar(&dump, "dumptemplate", dump, "dump default template to stdout and exit")
@@ -63,6 +65,7 @@ type runArgs struct {
 	HTML        string // destination html file
 
 	Template string // optional template file to override default
+	Cache    string // optional gallery metadata cache
 	Name     string // optional gallery name
 }
 
@@ -96,6 +99,42 @@ func (a *runArgs) validate() error {
 	return nil
 }
 
+type galleryCache struct {
+	Name string
+
+	mu     sync.Mutex
+	dups   map[string]string // key is imageDetails.ID, value is imageDetails.Original
+	Images []imageDetails
+	n      int
+}
+
+func (c *galleryCache) sort() {
+	sort.Slice(c.Images, func(i, j int) bool {
+		return c.Images[i].Time.After(c.Images[j].Time)
+	})
+}
+
+func (c *galleryCache) add(info imageDetails) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dups == nil {
+		c.dups = make(map[string]string, len(c.Images))
+		for _, info := range c.Images {
+			c.dups[info.ID] = info.Original
+		}
+	}
+	if s, ok := c.dups[info.ID]; ok {
+		if s == info.Original { // same image, ok to skip
+			return nil
+		}
+		return fmt.Errorf("gallery already has image with id %q: %q", info.ID, s)
+	}
+	c.Images = append(c.Images, info)
+	c.dups[info.ID] = info.Original
+	c.n++
+	return nil
+}
+
 func run(args runArgs) error {
 	if err := args.validate(); err != nil {
 		return err
@@ -117,9 +156,19 @@ func run(args runArgs) error {
 	if err != nil {
 		panic(err)
 	}
-	var mu sync.Mutex // protects concurrent population of galleryImages
-	var galleryImages []imageDetails
-
+	page := &galleryCache{Name: "Gallery"}
+	if args.Cache != "" {
+		switch c, err := loadCache(args.Cache); {
+		case os.IsNotExist(err):
+		case err != nil:
+			return err
+		default:
+			page = c
+		}
+	}
+	if args.Name != "" {
+		page.Name = args.Name
+	}
 	workers := runtime.GOMAXPROCS(0)
 	if workers < 1 {
 		workers = 1
@@ -169,9 +218,9 @@ func run(args runArgs) error {
 				if details.Time, err = imageTime(p); err != nil {
 					return err
 				}
-				mu.Lock()
-				galleryImages = append(galleryImages, details)
-				mu.Unlock()
+				if err := page.add(details); err != nil {
+					return fmt.Errorf("adding %q: %w", p, err)
+				}
 			}
 			return nil
 		})
@@ -210,27 +259,22 @@ func run(args runArgs) error {
 	if err := group.Wait(); err != nil {
 		return err
 	}
-	if len(galleryImages) == 0 {
+	if len(page.Images) == 0 {
 		return errors.New("no images found")
 	}
-	sort.Slice(galleryImages, func(i, j int) bool {
-		return galleryImages[i].Time.After(galleryImages[j].Time)
-	})
-	for _, d := range galleryImages {
-		fmt.Println(d)
-	}
+	page.sort()
 	buf := new(bytes.Buffer)
-	page := struct {
-		Name   string
-		Images []imageDetails
-	}{Name: "Gallery", Images: galleryImages}
-	if args.Name != "" {
-		page.Name = args.Name
-	}
 	if err := gallery.Execute(buf, page); err != nil {
 		return err
 	}
-	return ioutil.WriteFile(args.HTML, buf.Bytes(), 0666)
+	if err := ioutil.WriteFile(args.HTML, buf.Bytes(), 0666); err != nil {
+		return err
+	}
+	log.Printf("images added: %d, total: %d", page.n, len(page.Images))
+	if args.Cache != "" {
+		return saveCache(page, args.Cache)
+	}
+	return nil
 }
 
 type imageDetails struct {
@@ -506,6 +550,43 @@ func newTransform(width, height, maxWidth, maxHeight int) (transform, error) {
 	// 	return transform{}, errors.New("destination size exceeds limit")
 	// }
 	return tr, nil
+}
+
+func loadCache(name string) (*galleryCache, error) {
+	f, err := os.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	cache := &galleryCache{}
+	if err := json.NewDecoder(f).Decode(cache); err != nil {
+		return nil, err
+	}
+	return cache, nil
+}
+
+func saveCache(cache *galleryCache, name string) error {
+	tf, err := ioutil.TempFile(filepath.Dir(name), "photo-gallery-cache-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer tf.Close()
+	var defuse bool
+	defer func() {
+		if !defuse {
+			_ = os.Remove(tf.Name())
+		}
+	}()
+	enc := json.NewEncoder(tf)
+	enc.SetIndent("", "\t")
+	if err := enc.Encode(cache); err != nil {
+		return err
+	}
+	if err := tf.Close(); err != nil {
+		return err
+	}
+	defuse = true
+	return os.Rename(tf.Name(), name)
 }
 
 var defaultTemplate = template.Must(template.New("gallery").Parse(defaultTemplateBody))
