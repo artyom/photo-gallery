@@ -41,7 +41,16 @@ func main() {
 		" (hardlinked from the source if possible)")
 	flag.StringVar(&args.ThumbsDir, "thumbs", args.ThumbsDir, "directory to store thumbnails")
 	flag.StringVar(&args.HTML, "html", args.HTML, "generated gallery html file")
+	flag.StringVar(&args.Template, "template", args.Template, "template to use instead of default")
+	flag.StringVar(&args.Name, "name", args.Name, "optional gallery name")
+
+	var dump bool
+	flag.BoolVar(&dump, "dumptemplate", dump, "dump default template to stdout and exit")
 	flag.Parse()
+	if dump {
+		fmt.Println(defaultTemplateBody)
+		return
+	}
 	if err := run(args); err != nil {
 		log.Fatal(err)
 	}
@@ -52,6 +61,9 @@ type runArgs struct {
 	FullsizeDir string // destination directory for full size images
 	ThumbsDir   string // generated thumbnails directory
 	HTML        string // destination html file
+
+	Template string // optional template file to override default
+	Name     string // optional gallery name
 }
 
 func (a *runArgs) validate() error {
@@ -87,6 +99,13 @@ func (a *runArgs) validate() error {
 func run(args runArgs) error {
 	if err := args.validate(); err != nil {
 		return err
+	}
+	gallery := defaultTemplate
+	if args.Template != "" {
+		var err error
+		if gallery, err = template.ParseFiles(args.Template); err != nil {
+			return err
+		}
 	}
 	if err := os.MkdirAll(args.ThumbsDir, 0777); err != nil {
 		return err
@@ -201,7 +220,14 @@ func run(args runArgs) error {
 		fmt.Println(d)
 	}
 	buf := new(bytes.Buffer)
-	if err := gallery.Execute(buf, galleryImages); err != nil {
+	page := struct {
+		Name   string
+		Images []imageDetails
+	}{Name: "Gallery", Images: galleryImages}
+	if args.Name != "" {
+		page.Name = args.Name
+	}
+	if err := gallery.Execute(buf, page); err != nil {
 		return err
 	}
 	return ioutil.WriteFile(args.HTML, buf.Bytes(), 0666)
@@ -482,12 +508,17 @@ func newTransform(width, height, maxWidth, maxHeight int) (transform, error) {
 	return tr, nil
 }
 
-var gallery = template.Must(template.New("gallery").Parse(`<!DOCTYPE html><head><title>Gallery</title>
+var defaultTemplate = template.Must(template.New("gallery").Parse(defaultTemplateBody))
+
+const defaultTemplateBody = `<!DOCTYPE html><head><title>{{.Name}}</title>
 <meta charset="utf-8">
 <style>
-	* {box-sizing: border-box; border: none;}
+	* {box-sizing: border-box; border: none; font-family: ui-sans-serif, sans-serif;}
 	html {background-color: whitesmoke; padding:0;margin:0;}
 	body {padding:0;margin:0;}
+	header, footer {line-height: 1.7; padding: 5px; background-color: black; color: white;}
+	h1 {font-style: bold; font-size:x-large; margin:0;padding:0;}
+	footer {text-align: center;}
 	.gallery {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -532,16 +563,17 @@ var gallery = template.Must(template.New("gallery").Parse(`<!DOCTYPE html><head>
 </style>
 </head>
 <body>
-<div class="gallery">
-{{range .}}
+<header><h1>{{.Name}}</h1></header>
+<main class="gallery">
+{{range .Images}}
 	<figure{{if .Portrait}} class="portrait"{{end}}><a href="#{{.ID}}">
 	<img loading="lazy" src="{{.Thumbnail}}">
 	</a>
 	</figure>
 {{end}}
-</div>
+</main>
 <div class="fullsize-images">
-{{range .}}
+{{range .Images}}
 	<figure class="lightbox" id="{{.ID}}">
 		<a href="#back">
 		<img loading="lazy" src="{{.Original}}">
@@ -549,5 +581,6 @@ var gallery = template.Must(template.New("gallery").Parse(`<!DOCTYPE html><head>
 	</figure>
 {{end}}
 </div>
+<footer>&copy; all rights reserved</footer>
 </body>
-`))
+`
