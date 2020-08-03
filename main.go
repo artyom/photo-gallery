@@ -45,14 +45,14 @@ func main() {
 		HTML:        filepath.FromSlash("gallery/index.html"),
 		ThumbsDir:   filepath.FromSlash("gallery/thumbnails"),
 	}
-	flag.StringVar(&args.SrcDir, "source", args.SrcDir, "directory with source jpeg images")
-	flag.StringVar(&args.FullsizeDir, "fullsize", args.FullsizeDir, "directory to store full size image copies"+
+	flag.StringVar(&args.SrcDir, "src", args.SrcDir, "`directory` with source jpeg images")
+	flag.StringVar(&args.FullsizeDir, "orig", args.FullsizeDir, "`directory` to store full size image copies"+
 		" (hardlinked from the source if possible)")
-	flag.StringVar(&args.ThumbsDir, "thumbs", args.ThumbsDir, "directory to store thumbnails")
-	flag.StringVar(&args.HTML, "html", args.HTML, "generated gallery html file")
-	flag.StringVar(&args.Template, "template", args.Template, "template to use instead of default")
+	flag.StringVar(&args.ThumbsDir, "thumb", args.ThumbsDir, "`directory` to store thumbnails")
+	flag.StringVar(&args.HTML, "html", args.HTML, "generated gallery html `file`")
+	flag.StringVar(&args.Template, "template", args.Template, "template `file` to use instead of default")
 	flag.StringVar(&args.Name, "name", args.Name, "optional gallery name")
-	flag.StringVar(&args.Cache, "cache", args.Cache, "optional metadata cache, enables incremental gallery update")
+	flag.StringVar(&args.Cache, "cache", args.Cache, "optional metadata cache `file`, enables incremental gallery update")
 
 	var dump bool
 	flag.BoolVar(&dump, "dumptemplate", dump, "dump default template to stdout and exit")
