@@ -105,7 +105,11 @@ func run(args runArgs) error {
 			if err != nil {
 				return err
 			}
-			if !info.Mode().IsRegular() || !strings.HasSuffix(p, ".jpg") {
+			if p == args.ThumbDir {
+				return filepath.SkipDir
+			}
+			ext := filepath.Ext(p)
+			if !info.Mode().IsRegular() || !(strings.EqualFold(ext, ".jpg") || strings.EqualFold(ext, ".jpeg")) {
 				return nil
 			}
 			select {
