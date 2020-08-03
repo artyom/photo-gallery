@@ -16,7 +16,6 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
-	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -32,8 +31,16 @@ import (
 
 func main() {
 	log.SetFlags(0)
-	args := runArgs{SrcDir: "images", HTML: "gallery.html"}
-	flag.StringVar(&args.SrcDir, "srcdir", args.SrcDir, "directory with source images")
+	args := runArgs{
+		FullsizeDir: filepath.FromSlash("gallery/fullsize"),
+		HTML:        filepath.FromSlash("gallery/index.html"),
+		ThumbsDir:   filepath.FromSlash("gallery/thumbnails"),
+	}
+	flag.StringVar(&args.SrcDir, "source", args.SrcDir, "directory with source jpeg images")
+	flag.StringVar(&args.FullsizeDir, "fullsize", args.FullsizeDir, "directory to store full size image copies"+
+		" (hardlinked from the source if possible)")
+	flag.StringVar(&args.ThumbsDir, "thumbs", args.ThumbsDir, "directory to store thumbnails")
+	flag.StringVar(&args.HTML, "html", args.HTML, "generated gallery html file")
 	flag.Parse()
 	if err := run(args); err != nil {
 		log.Fatal(err)
@@ -41,15 +48,50 @@ func main() {
 }
 
 type runArgs struct {
-	SrcDir   string // source images
-	ThumbDir string // generated thumbnails directory
-	HTML     string // destination html file
+	SrcDir      string // source images
+	FullsizeDir string // destination directory for full size images
+	ThumbsDir   string // generated thumbnails directory
+	HTML        string // destination html file
+}
+
+func (a *runArgs) validate() error {
+	if a.SrcDir == "" {
+		return errors.New("source directory must be set")
+	}
+	if a.FullsizeDir == "" {
+		return errors.New("destination directory must be set")
+	}
+	if a.ThumbsDir == "" {
+		return errors.New("thumbnails directory must be set")
+	}
+	if a.HTML == "" {
+		return errors.New("output html file must be set")
+	}
+	if a.FullsizeDir == a.ThumbsDir {
+		return errors.New("destination and thumbnail directories cannot be the same")
+	}
+	if a.SrcDir == a.ThumbsDir {
+		return errors.New("source and thumbnail directories cannot be the same")
+	}
+	if dir, _ := filepath.Split(a.HTML); dir != "" {
+		if !strings.HasPrefix(a.ThumbsDir, dir) {
+			return errors.New("thumbnails directory cannot be above html file in FS hierarchy")
+		}
+		if !strings.HasPrefix(a.FullsizeDir, dir) {
+			return errors.New("destination directory cannot be above html file in FS hierarchy")
+		}
+	}
+	return nil
 }
 
 func run(args runArgs) error {
-	// TODO check args sanity
-	args.ThumbDir = "thumbnails" // FIXME
-	if err := os.MkdirAll(args.ThumbDir, 0777); err != nil {
+	if err := args.validate(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(args.ThumbsDir, 0777); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(args.FullsizeDir, 0777); err != nil {
 		return err
 	}
 	tr, err := newTransform(0, 0, 500, 500)
@@ -68,17 +110,34 @@ func run(args runArgs) error {
 	for i := 0; i < workers; i++ {
 		group.Go(func() error {
 			for p := range ch {
+				base := filepath.Base(p)
+				fullsizeImage := filepath.Join(args.FullsizeDir, base)
+				thumbnailFile := filepath.Join(args.ThumbsDir, base)
 				details := imageDetails{
-					Original:  filepath.ToSlash(p),
-					Thumbnail: path.Join(filepath.ToSlash(args.ThumbDir), filepath.Base(p)),
+					Original:  filepath.ToSlash(fullsizeImage),
+					Thumbnail: filepath.ToSlash(thumbnailFile),
+				}
+				if dir := filepath.Dir(args.HTML); dir != "" {
+					s, err := filepath.Rel(dir, fullsizeImage)
+					if err != nil {
+						return err
+					}
+					details.Original = filepath.ToSlash(s)
+					s, err = filepath.Rel(dir, thumbnailFile)
+					if err != nil {
+						return err
+					}
+					details.Thumbnail = filepath.ToSlash(s)
 				}
 				if id, err := imageHash(p); err != nil {
 					return err
 				} else {
 					details.ID = id
 				}
-				thumbnailFile := filepath.Join(args.ThumbDir, filepath.Base(p))
 				if err := createThumbnail(tr, thumbnailFile, p); err != nil {
+					return err
+				}
+				if err := linkOrCopy(fullsizeImage, p); err != nil {
 					return err
 				}
 				// TODO: maybe move isPortrait check into thumbnail generation?
@@ -107,7 +166,7 @@ func run(args runArgs) error {
 			if err != nil {
 				return err
 			}
-			if p == args.ThumbDir {
+			if p == args.ThumbsDir || p == args.FullsizeDir {
 				return filepath.SkipDir
 			}
 			ext := filepath.Ext(p)
@@ -234,6 +293,34 @@ func createThumbnail(tr transform, dst, src string) error {
 	}
 	defuse = true
 	return nil
+}
+
+// linkOrCopy creates a copy of a source file at its destination. It first
+// checks whether dst already existst and returns nil right away if it does. If
+// it does not exist, it tries to create a hard link. If that fails, it copies
+// file.
+func linkOrCopy(dst, src string) error {
+	if _, err := os.Stat(dst); err == nil {
+		return nil
+	}
+	if err := os.Link(src, dst); err == nil {
+		return nil
+	}
+	f, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	f2, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0666)
+	if err != nil {
+		return err
+	}
+	defer f2.Close()
+	if _, err := io.Copy(f2, f); err != nil {
+		_ = os.Remove(f2.Name())
+		return err
+	}
+	return f2.Close()
 }
 
 func imageHash(s string) (string, error) {
