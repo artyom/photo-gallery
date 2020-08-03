@@ -24,11 +24,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bamiaux/rez"
-	"github.com/disintegration/gift"
+	"github.com/disintegration/imaging"
 	"github.com/rwcarlsen/goexif/exif"
 	"github.com/rwcarlsen/goexif/tiff"
-	"golang.org/x/image/draw"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -265,24 +263,11 @@ func useExifOrientation(meta *exif.Exif) (rotatefunc func(image.Image) image.Ima
 	return nil, false
 }
 
-func flipHorizontal(src image.Image) image.Image { return rotate(src, gift.FlipHorizontal()) }
-func flipVertical(src image.Image) image.Image   { return rotate(src, gift.FlipVertical()) }
-func rotate90ccw(src image.Image) image.Image    { return rotate(src, gift.Rotate270()) }
-func rotate90cw(src image.Image) image.Image     { return rotate(src, gift.Rotate90()) }
-func rotate180(src image.Image) image.Image      { return rotate(src, gift.Rotate180()) }
-
-func rotate(src image.Image, filter gift.Filter) image.Image {
-	g := gift.New(filter)
-	var dst draw.Image
-	switch src.(type) {
-	case *image.Gray:
-		dst = image.NewGray(g.Bounds(src.Bounds()))
-	default:
-		dst = image.NewRGBA(g.Bounds(src.Bounds()))
-	}
-	g.Draw(dst, src)
-	return dst
-}
+func flipHorizontal(src image.Image) image.Image { return imaging.FlipH(src) }
+func flipVertical(src image.Image) image.Image   { return imaging.FlipV(src) }
+func rotate90ccw(src image.Image) image.Image    { return imaging.Rotate270(src) }
+func rotate90cw(src image.Image) image.Image     { return imaging.Rotate90(src) }
+func rotate180(src image.Image) image.Image      { return imaging.Rotate180(src) }
 
 // imageTime returns either time from EXIF metadata, or mtime of the file
 func imageTime(name string) (time.Time, error) {
@@ -328,45 +313,7 @@ func dateTimeDigitized(x *exif.Exif) (time.Time, error) {
 }
 
 func resizeImage(img image.Image, width, height int) (image.Image, error) {
-	switch img.(type) {
-	case *image.YCbCr, *image.RGBA, *image.NRGBA, *image.Gray:
-		return resize(img, width, height, rez.NewLanczosFilter(3))
-	}
-	return resizeFallback(img, width, height)
-}
-
-func resizeFallback(img image.Image, width, height int) (image.Image, error) {
-	outImg := image.NewRGBA(image.Rect(0, 0, width, height))
-	draw.CatmullRom.Scale(outImg, outImg.Bounds(), img, img.Bounds(), draw.Src, nil)
-	return outImg, nil
-}
-
-func resize(img image.Image, width, height int, algo rez.Filter) (image.Image, error) {
-	var outImg image.Image
-	rect := image.Rect(0, 0, width, height)
-	switch img.(type) {
-	case *image.Gray:
-		outImg = image.NewGray(rect)
-	case *image.RGBA:
-		outImg = image.NewRGBA(rect)
-	case *image.NRGBA:
-		outImg = image.NewNRGBA(rect)
-	default:
-		outImg = image.NewYCbCr(rect, image.YCbCrSubsampleRatio420)
-	}
-	cfg, err := rez.PrepareConversion(outImg, img)
-	if err != nil {
-		return nil, err
-	}
-	cfg.Threads = 1
-	converter, err := rez.NewConverter(cfg, algo)
-	if err != nil {
-		return nil, err
-	}
-	if err := converter.Convert(outImg, img); err != nil {
-		return nil, err
-	}
-	return outImg, nil
+	return imaging.Resize(img, width, height, imaging.CatmullRom), nil
 }
 
 type transform struct {
