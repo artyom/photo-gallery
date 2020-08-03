@@ -4,11 +4,11 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"html/template"
 	"image"
 	"image/jpeg"
@@ -71,7 +71,11 @@ func run(args runArgs) error {
 				details := imageDetails{
 					Original:  filepath.ToSlash(p),
 					Thumbnail: path.Join(filepath.ToSlash(args.ThumbDir), filepath.Base(p)),
-					ID:        randomID(),
+				}
+				if id, err := imageHash(p); err != nil {
+					return err
+				} else {
+					details.ID = id
 				}
 				thumbnailFile := filepath.Join(args.ThumbDir, filepath.Base(p))
 				if err := createThumbnail(tr, thumbnailFile, p); err != nil {
@@ -148,7 +152,7 @@ type imageDetails struct {
 	Portrait  bool      // whether image height is larger than width
 	Original  string    // path to original image
 	Thumbnail string    // thumbnail
-	ID        string    // randomly generated unique id
+	ID        string    // image id (TODO: use phash here)
 	Time      time.Time // either date from exif or mtime
 }
 
@@ -232,13 +236,17 @@ func createThumbnail(tr transform, dst, src string) error {
 	return nil
 }
 
-func randomID() string {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		panic(err)
+func imageHash(s string) (string, error) {
+	f, err := os.Open(s)
+	if err != nil {
+		return "", err
 	}
-	return base64.RawURLEncoding.EncodeToString(b)
-	// return fmt.Sprintf("%x", b)
+	defer f.Close()
+	h := fnv.New64a()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return base64.RawStdEncoding.EncodeToString(h.Sum(nil)), nil
 }
 
 func useExifOrientation(meta *exif.Exif) (rotatefunc func(image.Image) image.Image, swapWH bool) {
