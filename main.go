@@ -331,31 +331,11 @@ func createThumbnail(tr transform, dst, src string) error {
 	}
 	defer f.Close()
 
-	exifMeta, err := exif.Decode(f)
-	if err != nil {
-		return fmt.Errorf("exif decode: %w", err)
-	}
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-
-	img, err := jpeg.Decode(f)
+	img, err := imaging.Decode(f, imaging.AutoOrientation(true))
 	if err != nil {
 		return err
 	}
-
 	w, h := img.Bounds().Dx(), img.Bounds().Dy()
-
-	if exifMeta != nil {
-		rotate, swapWH := useExifOrientation(exifMeta)
-		if swapWH {
-			w, h = h, w
-		}
-		if rotate != nil {
-			img = rotate(img)
-		}
-	}
-
 	if w, h, err = tr.newDimensions(w, h); err != nil {
 		return err
 	}
@@ -413,34 +393,6 @@ func imageHash(s string) (string, error) {
 	}
 	return base64.RawStdEncoding.EncodeToString(h.Sum(nil)), nil
 }
-
-func useExifOrientation(meta *exif.Exif) (rotatefunc func(image.Image) image.Image, swapWH bool) {
-	o, err := meta.Get(exif.Orientation)
-	if err != nil || o == nil || len(o.Val) != 2 {
-		return nil, false
-	}
-	for _, x := range o.Val {
-		switch x {
-		case 3: // 180º
-			return rotate180, false
-		case 6: // 90ºCCW
-			return rotate90ccw, true
-		case 8: // 90ºCW
-			return rotate90cw, true
-		case 4: // vertical flip
-			return flipVertical, true
-		case 2: // horizontal flip
-			return flipHorizontal, true
-		}
-	}
-	return nil, false
-}
-
-func flipHorizontal(src image.Image) image.Image { return imaging.FlipH(src) }
-func flipVertical(src image.Image) image.Image   { return imaging.FlipV(src) }
-func rotate90ccw(src image.Image) image.Image    { return imaging.Rotate270(src) }
-func rotate90cw(src image.Image) image.Image     { return imaging.Rotate90(src) }
-func rotate180(src image.Image) image.Image      { return imaging.Rotate180(src) }
 
 // imageTime returns either time from EXIF metadata, or mtime of the file
 func imageTime(name string) (time.Time, error) {
