@@ -391,7 +391,7 @@ func imageHash(s string) (string, error) {
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
 	}
-	return base64.RawStdEncoding.EncodeToString(h.Sum(nil)), nil
+	return base64.RawURLEncoding.EncodeToString(h.Sum(nil)), nil
 }
 
 // imageTime returns either time from EXIF metadata, or mtime of the file
