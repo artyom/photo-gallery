@@ -32,6 +32,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/artyom/phash"
 	"github.com/disintegration/imaging"
 	"github.com/rwcarlsen/goexif/exif"
 	"github.com/rwcarlsen/goexif/tiff"
@@ -53,6 +54,7 @@ func main() {
 	flag.StringVar(&args.Template, "template", args.Template, "template `file` to use instead of default")
 	flag.StringVar(&args.Name, "name", args.Name, "optional gallery name")
 	flag.StringVar(&args.Cache, "cache", args.Cache, "optional metadata cache `file`, enables incremental gallery update")
+	flag.BoolVar(&args.Phash, "phash", args.Phash, "use perceptual hash to detect duplicates on add (slow)")
 
 	var dump bool
 	flag.BoolVar(&dump, "dumptemplate", dump, "dump default template to stdout and exit")
@@ -75,6 +77,7 @@ type runArgs struct {
 	Template string // optional template file to override default
 	Cache    string // optional gallery metadata cache
 	Name     string // optional gallery name
+	Phash    bool   // whether to use (slower) perceptual image hash
 }
 
 func (a *runArgs) validate() error {
@@ -107,42 +110,6 @@ func (a *runArgs) validate() error {
 	return nil
 }
 
-type galleryCache struct {
-	Name string
-
-	mu     sync.Mutex
-	dups   map[uint64]string // key is imageDetails.Hash, value is imageDetails.Source
-	Images []imageDetails
-	n      int
-}
-
-func (c *galleryCache) sort() {
-	sort.Slice(c.Images, func(i, j int) bool {
-		return c.Images[i].Time.After(c.Images[j].Time)
-	})
-}
-
-func (c *galleryCache) add(info imageDetails) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.dups == nil {
-		c.dups = make(map[uint64]string, len(c.Images))
-		for _, info := range c.Images {
-			c.dups[info.Hash] = info.Source
-		}
-	}
-	if s, ok := c.dups[info.Hash]; ok {
-		if s == info.Source { // same image, ok to skip
-			return nil
-		}
-		return fmt.Errorf("gallery already has image with id %q: %q (original file name)", info.ID(), s)
-	}
-	c.Images = append(c.Images, info)
-	c.dups[info.Hash] = info.Source
-	c.n++
-	return nil
-}
-
 func run(args runArgs) error {
 	if err := args.validate(); err != nil {
 		return err
@@ -164,13 +131,16 @@ func run(args runArgs) error {
 	if err != nil {
 		panic(err)
 	}
-	page := &galleryCache{Name: "Gallery"}
+	page := &galleryCache{Name: "Gallery", UsePhash: args.Phash}
 	if args.Cache != "" {
 		switch c, err := loadCache(args.Cache); {
 		case os.IsNotExist(err):
 		case err != nil:
 			return err
 		default:
+			if c.UsePhash != page.UsePhash {
+				log.Printf("metadata cache stored with -phash=%v, using it", c.UsePhash)
+			}
 			page = c
 		}
 	}
@@ -186,7 +156,13 @@ func run(args runArgs) error {
 	for i := 0; i < workers; i++ {
 		group.Go(func() error {
 			for p := range ch {
-				id, err := imageHash(p)
+				var id uint64
+				var err error
+				if page.UsePhash {
+					id, err = imagePhash(p)
+				} else {
+					id, err = fileHash(p)
+				}
 				if err != nil {
 					return err
 				}
@@ -269,7 +245,7 @@ func run(args runArgs) error {
 	if len(page.Images) == 0 {
 		return errors.New("no images found")
 	}
-	page.sort()
+	page.sortByTime()
 	buf := new(bytes.Buffer)
 	if err := gallery.Execute(buf, page); err != nil {
 		return err
@@ -391,7 +367,8 @@ func linkOrCopy(dst, src string) error {
 	return f2.Close()
 }
 
-func imageHash(s string) (uint64, error) {
+// fileHash returns content-based non-cryptographic hash of a file
+func fileHash(s string) (uint64, error) {
 	f, err := os.Open(s)
 	if err != nil {
 		return 0, err
@@ -402,6 +379,22 @@ func imageHash(s string) (uint64, error) {
 		return 0, err
 	}
 	return h.Sum64(), nil
+}
+
+// imagePhash returns perceptual hash of an image read from the file
+func imagePhash(s string) (uint64, error) {
+	f, err := os.Open(s)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	img, err := imaging.Decode(f, imaging.AutoOrientation(true))
+	if err != nil {
+		return 0, err
+	}
+	return phash.Get(img, func(img image.Image, w, h int) image.Image {
+		return imaging.Resize(img, w, h, imaging.Lanczos)
+	})
 }
 
 // imageTime returns either time from EXIF metadata, or mtime of the file
@@ -520,6 +513,112 @@ func newTransform(width, height, maxWidth, maxHeight int) (transform, error) {
 	// 	return transform{}, errors.New("destination size exceeds limit")
 	// }
 	return tr, nil
+}
+
+type galleryCache struct {
+	Name     string
+	UsePhash bool
+
+	// onceSortPhash guards initial sort of Images by increasing Hash when run
+	// with UserPhash=true, so add method can rely on binary search
+	onceSortPhash sync.Once
+
+	mu     sync.Mutex
+	Images []imageDetails
+
+	// dups is used to track duplicates when UsePhash=false, and
+	// imageDetails.Hash holds file-based hash
+	dups map[uint64]string // key is imageDetails.Hash, value is imageDetails.Source
+	n    int               // number of images added to the gallery during program run
+}
+
+// sortByTime sorts gallery dy time in descending order (newest images first)
+func (c *galleryCache) sortByTime() {
+	sort.Slice(c.Images, func(i, j int) bool {
+		return c.Images[i].Time.After(c.Images[j].Time)
+	})
+}
+
+// minDiff is a phash distance similarity threshold: phash distance above this
+// threshold are treated as different images, images with phash distance equal
+// or below this threshold are reported as likely duplicates
+const minDiff = 5
+
+func (c *galleryCache) addWithPhash(info imageDetails) error {
+	c.onceSortPhash.Do(func() {
+		sort.SliceStable(c.Images, func(i, j int) bool {
+			return c.Images[i].Hash < c.Images[j].Hash
+		})
+	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	i := sort.Search(len(c.Images), func(i int) bool { return c.Images[i].Hash >= info.Hash })
+
+	if i == len(c.Images) {
+		if i != 0 {
+			info2 := c.Images[i-1]
+			if diff := phash.Distance(info.Hash, info2.Hash); diff <= minDiff {
+				return fmt.Errorf("possible duplicate (phash similarity distance=%d)"+
+					" of %q (source filename %q)", diff, info2.Original, info2.Source)
+			}
+		}
+		c.Images = append(c.Images, info)
+		return nil
+	}
+	if info2 := c.Images[i]; info2.Hash == info.Hash {
+		if info2.Source == info.Source && info2.Time.Equal(info.Time) { // attempt to re-add the same image
+			return nil
+		}
+		return fmt.Errorf("duplicate (same phash) of %q (source filename %q)", info2.Original, info2.Source)
+	}
+
+	// the index is [i] here, and not [i+1], because this check is *before*
+	// info is inserted into c.Images slice, so an element that would be to its
+	// right is still at position [i]
+	info2 := c.Images[i]
+	if diff := phash.Distance(info.Hash, info2.Hash); diff <= minDiff {
+		return fmt.Errorf("possible duplicate (phash similarity distance=%d)"+
+			" of %q (source filename %q)", diff, info2.Original, info2.Source)
+	}
+	if i > 0 {
+		info2 = c.Images[i-1]
+		if diff := phash.Distance(info.Hash, info2.Hash); diff <= minDiff {
+			return fmt.Errorf("possible duplicate (phash similarity distance=%d)"+
+				" of %q (source filename %q)", diff, info2.Original, info2.Source)
+		}
+	}
+
+	head := c.Images[:i+1]
+	tail := make([]imageDetails, len(c.Images[i:]))
+	copy(tail, c.Images[i:])
+	head[i] = info
+	c.Images = append(head, tail...)
+	return nil
+}
+
+func (c *galleryCache) add(info imageDetails) error {
+	if c.UsePhash {
+		return c.addWithPhash(info)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dups == nil {
+		c.dups = make(map[uint64]string, len(c.Images))
+		for _, info := range c.Images {
+			c.dups[info.Hash] = info.Source
+		}
+	}
+	if s, ok := c.dups[info.Hash]; ok {
+		if s == info.Source { // same image, ok to skip
+			return nil
+		}
+		return fmt.Errorf("gallery already has image with id %q: %q (original file name)", info.ID(), s)
+	}
+	c.Images = append(c.Images, info)
+	c.dups[info.Hash] = info.Source
+	c.n++
+	return nil
 }
 
 func loadCache(name string) (*galleryCache, error) {

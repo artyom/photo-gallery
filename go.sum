@@ -1,3 +1,5 @@
+github.com/artyom/phash v0.1.0 h1:Ts7u3IYqGTbrCTh0LUp+05MgKuoZ0H9wXukeYhlNT84=
+github.com/artyom/phash v0.1.0/go.mod h1:bapoFYcaDxEw5zmBjEOWfF+IJkmL5Y22+81xqEEKQW8=
 github.com/disintegration/imaging v1.6.2 h1:w1LecBlG2Lnp8B3jk5zSuNqd7b4DXhcjwek1ei82L+c=
 github.com/disintegration/imaging v1.6.2/go.mod h1:44/5580QXChDfwIclfc/PCwrr44amcmDAg8hxG0Ewe4=
 github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd h1:CmH9+J6ZSsIjUK3dcGsnCnO41eRBOnY12zwkn5qVwgc=

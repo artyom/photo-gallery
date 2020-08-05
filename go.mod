@@ -3,6 +3,7 @@ module github.com/artyom/photo-gallery
 go 1.15
 
 require (
+	github.com/artyom/phash v0.1.0
 	github.com/disintegration/imaging v1.6.2
 	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd
 	golang.org/x/image v0.0.0-20200801110659-972c09e46d76 // indirect
