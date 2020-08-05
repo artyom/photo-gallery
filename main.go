@@ -564,6 +564,7 @@ func (c *galleryCache) addWithPhash(info imageDetails) error {
 			}
 		}
 		c.Images = append(c.Images, info)
+		c.n++
 		return nil
 	}
 	if info2 := c.Images[i]; info2.Hash == info.Hash {
@@ -594,6 +595,7 @@ func (c *galleryCache) addWithPhash(info imageDetails) error {
 	copy(tail, c.Images[i:])
 	head[i] = info
 	c.Images = append(head, tail...)
+	c.n++
 	return nil
 }
 
