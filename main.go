@@ -111,7 +111,7 @@ type galleryCache struct {
 	Name string
 
 	mu     sync.Mutex
-	dups   map[uint64]string // key is imageDetails.Hash, value is imageDetails.Original
+	dups   map[uint64]string // key is imageDetails.Hash, value is imageDetails.Source
 	Images []imageDetails
 	n      int
 }
@@ -128,17 +128,17 @@ func (c *galleryCache) add(info imageDetails) error {
 	if c.dups == nil {
 		c.dups = make(map[uint64]string, len(c.Images))
 		for _, info := range c.Images {
-			c.dups[info.Hash] = info.Original
+			c.dups[info.Hash] = info.Source
 		}
 	}
 	if s, ok := c.dups[info.Hash]; ok {
-		if s == info.Original { // same image, ok to skip
+		if s == info.Source { // same image, ok to skip
 			return nil
 		}
-		return fmt.Errorf("gallery already has image with id %q: %q", info.ID(), s)
+		return fmt.Errorf("gallery already has image with id %q: %q (original file name)", info.ID(), s)
 	}
 	c.Images = append(c.Images, info)
-	c.dups[info.Hash] = info.Original
+	c.dups[info.Hash] = info.Source
 	c.n++
 	return nil
 }
@@ -186,12 +186,17 @@ func run(args runArgs) error {
 	for i := 0; i < workers; i++ {
 		group.Go(func() error {
 			for p := range ch {
-				base := filepath.Base(p)
-				fullsizeImage := filepath.Join(args.FullsizeDir, base)
-				thumbnailFile := filepath.Join(args.ThumbsDir, base)
+				id, err := imageHash(p)
+				if err != nil {
+					return err
+				}
+				fullsizeImage := filepath.Join(args.FullsizeDir, fmt.Sprintf("%x%s", id, filepath.Ext(p)))
+				thumbnailFile := filepath.Join(args.ThumbsDir, fmt.Sprintf("%x.jpg", id))
 				details := imageDetails{
 					Original:  filepath.ToSlash(fullsizeImage),
 					Thumbnail: filepath.ToSlash(thumbnailFile),
+					Source:    p,
+					Hash:      id,
 				}
 				if dir := filepath.Dir(args.HTML); dir != "" {
 					s, err := filepath.Rel(dir, fullsizeImage)
@@ -205,11 +210,6 @@ func run(args runArgs) error {
 					}
 					details.Thumbnail = filepath.ToSlash(s)
 				}
-				if id, err := imageHash(p); err != nil {
-					return err
-				} else {
-					details.Hash = id
-				}
 				if err := createThumbnail(tr, thumbnailFile, p); err != nil {
 					return err
 				}
@@ -222,7 +222,6 @@ func run(args runArgs) error {
 				} else {
 					details.Portrait = ok
 				}
-				var err error
 				if details.Time, err = imageTime(p); err != nil {
 					return err
 				}
@@ -286,9 +285,10 @@ func run(args runArgs) error {
 }
 
 type imageDetails struct {
-	Portrait  bool      // whether image height is larger than width
-	Original  string    // path to original image
+	Portrait  bool      `json:",omitempty"` // whether image height is larger than width
+	Original  string    // full-sized image copy
 	Thumbnail string    // thumbnail
+	Source    string    // source file name (OS and filesystem-specific)
 	Hash      uint64    `json:",string"`
 	Time      time.Time // either date from exif or mtime
 }
