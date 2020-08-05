@@ -111,7 +111,7 @@ type galleryCache struct {
 	Name string
 
 	mu     sync.Mutex
-	dups   map[string]string // key is imageDetails.ID, value is imageDetails.Original
+	dups   map[uint64]string // key is imageDetails.Hash, value is imageDetails.Original
 	Images []imageDetails
 	n      int
 }
@@ -126,19 +126,19 @@ func (c *galleryCache) add(info imageDetails) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.dups == nil {
-		c.dups = make(map[string]string, len(c.Images))
+		c.dups = make(map[uint64]string, len(c.Images))
 		for _, info := range c.Images {
-			c.dups[info.ID] = info.Original
+			c.dups[info.Hash] = info.Original
 		}
 	}
-	if s, ok := c.dups[info.ID]; ok {
+	if s, ok := c.dups[info.Hash]; ok {
 		if s == info.Original { // same image, ok to skip
 			return nil
 		}
-		return fmt.Errorf("gallery already has image with id %q: %q", info.ID, s)
+		return fmt.Errorf("gallery already has image with id %q: %q", info.ID(), s)
 	}
 	c.Images = append(c.Images, info)
-	c.dups[info.ID] = info.Original
+	c.dups[info.Hash] = info.Original
 	c.n++
 	return nil
 }
@@ -208,7 +208,7 @@ func run(args runArgs) error {
 				if id, err := imageHash(p); err != nil {
 					return err
 				} else {
-					details.ID = id
+					details.Hash = id
 				}
 				if err := createThumbnail(tr, thumbnailFile, p); err != nil {
 					return err
@@ -289,8 +289,18 @@ type imageDetails struct {
 	Portrait  bool      // whether image height is larger than width
 	Original  string    // path to original image
 	Thumbnail string    // thumbnail
-	ID        string    // image id (TODO: use phash here)
+	Hash      uint64    `json:",string"`
 	Time      time.Time // either date from exif or mtime
+}
+
+// idToBytes returns v as byte slice laid out in big-endian order
+func idToBytes(v uint64) []byte {
+	var b []byte
+	return append(b, byte(v>>56), byte(v>>48), byte(v>>40), byte(v>>32), byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
+}
+
+func (d *imageDetails) ID() string {
+	return base64.RawURLEncoding.EncodeToString(idToBytes(d.Hash))
 }
 
 // isPortrait reports whether image is in a portrait orientation (its height is
@@ -381,17 +391,17 @@ func linkOrCopy(dst, src string) error {
 	return f2.Close()
 }
 
-func imageHash(s string) (string, error) {
+func imageHash(s string) (uint64, error) {
 	f, err := os.Open(s)
 	if err != nil {
-		return "", err
+		return 0, err
 	}
 	defer f.Close()
 	h := fnv.New64a()
 	if _, err := io.Copy(h, f); err != nil {
-		return "", err
+		return 0, err
 	}
-	return base64.RawURLEncoding.EncodeToString(h.Sum(nil)), nil
+	return h.Sum64(), nil
 }
 
 // imageTime returns either time from EXIF metadata, or mtime of the file
