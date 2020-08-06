@@ -717,9 +717,9 @@ const defaultTemplateBody = `<!DOCTYPE html><head><title>{{.Name}}</title>
 <body>
 <header><h1>{{.Name}}</h1></header>
 <main class="gallery">
-{{range .Images}}
-	<figure{{if .Portrait}} class="portrait"{{end}}><a href="#{{.ID}}">
-	<img loading="lazy" src="{{.Thumbnail}}">
+{{range $i, $img := .Images}}
+	<figure{{if $img.Portrait}} class="portrait"{{end}}><a href="#{{$img.ID}}">
+	<img {{if gt $i 10}}loading="lazy" {{end}}src="{{$img.Thumbnail}}">
 	</a>
 	</figure>
 {{end}}
