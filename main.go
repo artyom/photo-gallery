@@ -662,8 +662,11 @@ func saveCache(cache *galleryCache, name string) error {
 
 var defaultTemplate = template.Must(template.New("gallery").Parse(defaultTemplateBody))
 
-const defaultTemplateBody = `<!DOCTYPE html><head><title>{{.Name}}</title>
-<meta charset="utf-8">
+const defaultTemplateBody = `<!DOCTYPE html><head><meta charset="utf-8">
+<title>{{.Name}}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{{$max := 5}}{{$slen := len .Images}}{{if lt $slen $max}}{{$max = $slen}}{{end}}{{range slice .Images 0 $max}}
+<link rel="preload" as="image" type="image/jpeg" href="{{.Thumbnail}}">{{end}}
 <style>
 	* {box-sizing: border-box; border: none; font-family: ui-sans-serif, sans-serif;}
 	html {background-color: whitesmoke; padding:0;margin:0;}
