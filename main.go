@@ -329,7 +329,7 @@ func createThumbnail(tr transform, dst, src string) error {
 	if err != nil {
 		return err
 	}
-	if err = jpeg.Encode(thumb, img, &jpeg.Options{Quality: 95}); err != nil {
+	if err = jpeg.Encode(thumb, imaging.Sharpen(img, 0.5), &jpeg.Options{Quality: 90}); err != nil {
 		return err
 	}
 	if err = thumb.Close(); err != nil {
